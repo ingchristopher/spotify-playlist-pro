@@ -1,0 +1,787 @@
+import sys
+import os
+import re
+import random
+import subprocess
+import time
+import uuid
+from datetime import datetime, timezone, timedelta
+from pathlib import Path
+
+from dotenv import load_dotenv
+from supabase import create_client
+
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+
+from PyQt6.QtWidgets import *
+from PyQt6.QtCore import *
+from PyQt6.QtGui import *
+from PyQt6.QtWebEngineWidgets import *
+from PyQt6.QtWebEngineCore import *
+
+
+BASE_ENV = Path(__file__).parent.resolve()
+
+possible_envs = [
+    BASE_ENV / ".env",
+    Path.cwd() / ".env",
+    Path.home() / "Downloads" / "spotify_playlist_app" / ".env",
+]
+
+for env_file in possible_envs:
+    if env_file.exists():
+        load_dotenv(env_file)
+        break
+
+
+
+BASE = Path(__file__).parent.resolve()
+
+DATA_DIR = Path.home() / "Documents" / "SpotifyPlaylistPro"
+DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+
+FILES = {
+    "artists": DATA_DIR / "artist_links.txt",
+    "ideas": DATA_DIR / "ideas_nombres.txt",
+    "library": DATA_DIR / "biblioteca_artistas.txt",
+    "generated": DATA_DIR / "playlist_generada_links.txt",
+    "used": DATA_DIR / "canciones_usadas_historial.txt",
+    "used_names": DATA_DIR / "nombres_usados.txt",
+    "license": DATA_DIR / "license_local.txt",
+    "created_playlists": DATA_DIR / "playlist_creadas.txt",
+}
+
+for f in FILES.values():
+    f.touch(exist_ok=True)
+
+SCOPES = "playlist-modify-public playlist-modify-private playlist-read-private"
+
+def read(path):
+    return [x.strip() for x in path.read_text(encoding="utf-8").splitlines() if x.strip()]
+
+def write(path, lines):
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+def append(path, lines):
+    old = read(path)
+    with path.open("a", encoding="utf-8") as f:
+        for line in lines:
+            if line not in old:
+                f.write(line + "\n")
+
+
+def supabase_client():
+    return create_client(
+        os.getenv("SUPABASE_URL"),
+        os.getenv("SUPABASE_KEY")
+    )
+
+def device_id():
+    path = DATA_DIR / "device_id.txt"
+    if path.exists():
+        return path.read_text().strip()
+    new_id = str(uuid.uuid4())
+    path.write_text(new_id)
+    return new_id
+
+def sp():
+    return spotipy.Spotify(auth_manager=SpotifyOAuth(
+        client_id=os.getenv("SPOTIFY_CLIENT_ID"),
+        client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
+        redirect_uri="http://127.0.0.1:8888/callback",
+        scope=SCOPES,
+        cache_path=str(BASE / ".spotify_cache"),
+        open_browser=True
+    ))
+
+def artist_id(link):
+    m = re.search(r"artist/([A-Za-z0-9]+)", link)
+    if m:
+        return m.group(1)
+    return link.strip()
+
+class App(QWidget):
+
+    def __init__(self):
+        super().__init__()
+
+        self.setWindowTitle("Spotify Playlist Auto Pro")
+        self.resize(1600, 950)
+
+        self.setStyleSheet("""
+            QWidget {
+                background:#05080d;
+                color:white;
+                font-family:Arial;
+            }
+
+            QPushButton {
+                background:#0066ff;
+                color:white;
+                font-size:18px;
+                font-weight:900;
+                border-radius:12px;
+                padding:14px;
+                border:2px solid white;
+            }
+
+            QPushButton:hover {
+                background:#1DB954;
+            }
+
+            QTextEdit {
+                background:#07111f;
+                color:#00ff88;
+                border:2px solid #1DB954;
+                border-radius:8px;
+                font-size:14px;
+            }
+        """)
+
+        root = QHBoxLayout()
+
+        left = QVBoxLayout()
+
+        title = QLabel("Spotify Playlist Auto Pro")
+        title.setStyleSheet("""
+            font-size:26px;
+            font-weight:bold;
+            color:#1DB954;
+        """)
+
+        left.addWidget(title)
+
+        credit = QLabel("Christopher Cedeno\nchristopher.cedeno@gmail.com")
+        credit.setStyleSheet("font-size:13px;")
+        left.addWidget(credit)
+
+        self.usage_label = QLabel("Uso disponible: No activado")
+        self.usage_label.setStyleSheet("""
+            background:#ff0033;
+            color:white;
+            font-size:18px;
+            font-weight:900;
+            padding:10px;
+            border-radius:10px;
+            border:2px solid white;
+        """)
+        left.addWidget(self.usage_label)
+
+        buttons = [
+            ("🔐 Activar Licencia", self.activate_license),
+            ("🎵 Generar Playlist", self.generate_playlist),
+            ("👤 Mis Artistas", self.open_artists),
+            ("➕ Agregar Artista", self.add_artist),
+            ("📚 Playlists creadas", self.open_created_playlists),
+            ("⚙️ Configuración", self.config),
+        ]
+
+        for text, fn in buttons:
+            btn = QPushButton(text)
+            btn.setMinimumHeight(60)
+            btn.clicked.connect(fn)
+            left.addWidget(btn)
+
+        self.log = QTextEdit()
+        self.log.setReadOnly(True)
+        self.log.setText("Consola lista...\n")
+        left.addWidget(self.log)
+
+        left_widget = QWidget()
+        left_widget.setLayout(left)
+        left_widget.setFixedWidth(380)
+
+        self.profile = QWebEngineProfile("spotify_profile", self)
+
+        self.profile.setPersistentCookiesPolicy(
+            QWebEngineProfile.PersistentCookiesPolicy.ForcePersistentCookies
+        )
+
+        self.profile.setPersistentStoragePath(
+            str(BASE / "spotify_storage")
+        )
+
+        self.profile.setCachePath(
+            str(BASE / "spotify_cache")
+        )
+
+        self.web = QWebEngineView()
+
+        self.page = QWebEnginePage(self.profile, self.web)
+
+        self.web.setPage(self.page)
+
+        self.web.load(QUrl("https://open.spotify.com"))
+
+        QTimer.singleShot(1500, self.update_usage_label)
+
+        root.addWidget(left_widget)
+        root.addWidget(self.web)
+
+        self.setLayout(root)
+
+
+    def update_usage_label(self):
+
+        try:
+            lic = self.get_license()
+
+            if not lic:
+                self.usage_label.setText("Uso disponible: No activado")
+                return
+
+            used = int(lic.get("used_playlists", 0))
+            limit = int(lic.get("playlist_limit", 0))
+            remaining = max(limit - used, 0)
+
+            self.usage_label.setText(f"Uso disponible: {remaining} playlists")
+
+        except Exception:
+            self.usage_label.setText("Uso disponible: Error")
+
+    def msg(self, text):
+        self.log.append(str(text))
+        QApplication.processEvents()
+
+
+
+    def add_artist(self):
+
+        text, ok = QInputDialog.getText(
+            self,
+            "Agregar Artista",
+            "Pega link artista Spotify:"
+        )
+
+        if ok and text.strip():
+
+            current = read(FILES["artists"])
+
+            if text.strip() not in current:
+
+                append(
+                    FILES["artists"],
+                    [text.strip()]
+                )
+
+                self.msg("Artista agregado.")
+
+            else:
+
+                self.msg("Ese artista ya existe.")
+
+
+
+    def add_artist(self):
+
+        text, ok = QInputDialog.getText(
+            self,
+            "Agregar Artista",
+            "Pega link artista Spotify:"
+        )
+
+        if ok and text.strip():
+
+            current = read(FILES["artists"])
+
+            if text.strip() not in current:
+
+                append(
+                    FILES["artists"],
+                    [text.strip()]
+                )
+
+                self.msg("Artista agregado.")
+
+            else:
+
+                self.msg("Ese artista ya existe.")
+
+    def open_artists(self):
+        os.system(f"open '{FILES['artists']}'")
+
+    def open_ideas(self):
+        os.system(f"open '{FILES['ideas']}'")
+
+
+    def open_created_playlists(self):
+        os.system(f"open '{FILES['created_playlists']}'")
+        self.msg("Abriendo playlists creadas.")
+
+    def config(self):
+        self.msg("CONFIG OK")
+
+
+    def choose_name(self):
+
+        raw = FILES["ideas"].read_text(encoding="utf-8")
+
+        ideas = []
+
+        # dividir por:
+        # coma
+        # salto linea
+        # punto y coma
+
+        for part in re.split(r"[,;\n]+", raw):
+
+            clean = part.strip()
+
+            if clean:
+                ideas.append(clean)
+
+        if not ideas:
+            return "Playlist Automática"
+
+        used = set(read(FILES["used_names"]))
+
+        available = [
+            x for x in ideas
+            if x not in used
+        ]
+
+        if not available:
+
+            write(FILES["used_names"], [])
+
+            available = ideas
+
+        name = random.choice(available)
+
+        # maximo 80 chars
+        name = name[:80]
+
+        append(FILES["used_names"], [name])
+
+        return name
+
+    def update_library(self):
+
+        client = sp()
+
+        artists = read(FILES["artists"])
+
+        all_tracks = []
+
+        for link in artists:
+
+            aid = artist_id(link)
+
+            self.msg(f"Leyendo artista: {aid}")
+
+            try:
+
+                artist_info = client.artist(aid)
+
+                artist_name = artist_info.get("name", "")
+
+                self.msg(f"Buscando canciones de: {artist_name}")
+
+                for offset in range(0, 100, 10):
+
+                    results = client.search(
+                        q=f'artist:"{artist_name}"',
+                        type="track",
+                        limit=10,
+                        offset=offset,
+                        market="US"
+                    )
+
+                    items = results.get("tracks", {}).get("items", [])
+
+                    if not items:
+                        break
+
+                    for t in items:
+
+                        artist_names = [
+                            a.get("name", "").lower()
+                            for a in t.get("artists", [])
+                        ]
+
+                        if artist_name.lower() in artist_names and t.get("id"):
+
+                            url = f"https://open.spotify.com/track/{t['id']}"
+
+                            all_tracks.append(url)
+
+                    time.sleep(0.25)
+
+            except Exception as e:
+
+                self.msg(str(e))
+
+        unique = []
+
+        seen = set()
+
+        for x in all_tracks:
+            if x not in seen:
+                seen.add(x)
+                unique.append(x)
+
+        write(FILES["library"], unique)
+
+        self.msg(f"Biblioteca actualizada: {len(unique)} canciones")
+
+
+
+
+    def activate_license(self):
+
+        code, ok = QInputDialog.getText(
+            self,
+            "Activar Licencia",
+            "Coloca tu código de activación:"
+        )
+
+        if not ok or not code.strip():
+            return
+
+        code = code.strip().upper()
+
+        try:
+            db = supabase_client()
+            did = device_id()
+
+            result = db.table("licenses").select("*").eq("code", code).execute()
+
+            if not result.data:
+                self.msg("Código no existe.")
+                return
+
+            lic = result.data[0]
+
+            if lic.get("activated") and lic.get("device_id") != did:
+                self.msg("Este código ya fue usado en otro equipo.")
+                return
+
+            now = datetime.now(timezone.utc)
+
+            if not lic.get("activated"):
+                days = int(lic.get("license_days", 7))
+                expires = now + timedelta(days=days)
+
+                db.table("licenses").update({
+                    "activated": True,
+                    "activated_at": now.isoformat(),
+                    "expires_at": expires.isoformat(),
+                    "device_id": did
+                }).eq("code", code).execute()
+
+            FILES["license"].write_text(code, encoding="utf-8")
+            self.msg("Licencia activada correctamente.")
+            self.update_usage_label()
+
+        except Exception as e:
+            self.msg("ERROR activando licencia:")
+            self.msg(str(e))
+
+    def get_license(self):
+
+        if not FILES["license"].exists():
+            return None
+
+        code = FILES["license"].read_text(encoding="utf-8").strip()
+
+        if not code:
+            return None
+
+        db = supabase_client()
+        result = db.table("licenses").select("*").eq("code", code).execute()
+
+        if not result.data:
+            return None
+
+        return result.data[0]
+
+    def check_license_before_generate(self):
+
+        try:
+            lic = self.get_license()
+
+            if not lic:
+                self.msg("No tienes licencia activa. Presiona 🔐 Activar Licencia.")
+                return False
+
+            did = device_id()
+
+            if lic.get("device_id") != did:
+                self.msg("Licencia no pertenece a este equipo.")
+                return False
+
+            expires_at = lic.get("expires_at")
+
+            if expires_at:
+                exp = datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+                now = datetime.now(timezone.utc)
+
+                if now > exp:
+                    self.msg("Licencia vencida.")
+                    return False
+
+            used = int(lic.get("used_playlists", 0))
+            limit = int(lic.get("playlist_limit", 0))
+
+            if used >= limit:
+                self.msg("Límite de playlists alcanzado.")
+                return False
+
+            remaining = limit - used
+            self.msg(f"Licencia OK. Playlists restantes: {remaining}")
+
+            return True
+
+        except Exception as e:
+            self.msg("ERROR verificando licencia:")
+            self.msg(str(e))
+            return False
+
+    def consume_license_use(self):
+
+        try:
+            lic = self.get_license()
+
+            if not lic:
+                return
+
+            used = int(lic.get("used_playlists", 0)) + 1
+
+            db = supabase_client()
+            db.table("licenses").update({
+                "used_playlists": used
+            }).eq("code", lic.get("code")).execute()
+
+            self.msg(f"Uso registrado. Playlists usadas: {used}")
+            self.update_usage_label()
+
+        except Exception as e:
+            self.msg("No pude registrar uso licencia:")
+            self.msg(str(e))
+
+
+    def license_status(self):
+
+        try:
+
+            lic = self.get_license()
+
+            if not lic:
+                self.msg("No hay licencia activa.")
+                return
+
+            used = int(
+                lic.get("used_playlists", 0)
+            )
+
+            limit = int(
+                lic.get("playlist_limit", 0)
+            )
+
+            remaining = limit - used
+
+            if remaining < 0:
+                remaining = 0
+
+            self.msg(
+                f"Uso disponible: {remaining} playlists"
+            )
+
+        except Exception as e:
+
+            self.msg(str(e))
+
+
+    def generate_playlist(self):
+
+        try:
+
+            if not self.check_license_before_generate():
+                return
+
+            self.update_library()
+
+            songs = read(FILES["library"])
+
+            if not songs:
+                self.msg("No hay canciones.")
+                return
+
+            client = sp()
+
+            random_library = []
+
+            for q in ["top hits", "viral music", "latin hits", "reggaeton", "pop hits", "dance hits"]:
+
+                try:
+
+                    results = client.search(
+                        q=q,
+                        type="track",
+                        limit=10,
+                        market="US"
+                    )
+
+                    for t in results.get("tracks", {}).get("items", []):
+
+                        if t.get("id"):
+
+                            random_library.append(
+                                f"https://open.spotify.com/track/{t['id']}"
+                            )
+
+                except Exception as e:
+
+                    self.msg(str(e))
+
+            random_library = list(dict.fromkeys(random_library))
+
+            total = random.randint(50, 60)
+
+            mine_percent = random.randint(80, 90) / 100
+
+            mine_count = int(total * mine_percent)
+
+            random_count = total - mine_count
+
+            used = set(read(FILES["used"]))
+
+            mine_fresh = [x for x in songs if x not in used]
+
+            if len(mine_fresh) < mine_count:
+                mine_fresh = songs
+
+            random_fresh = [x for x in random_library if x not in used]
+
+            if len(random_fresh) < random_count:
+                random_fresh = random_library
+
+            selected_mine = random.sample(
+                mine_fresh,
+                min(mine_count, len(mine_fresh))
+            )
+
+            selected_random = random.sample(
+                random_fresh,
+                min(random_count, len(random_fresh))
+            )
+
+            selected = selected_mine + selected_random
+
+            missing = total - len(selected)
+
+            if missing > 0:
+
+                extra_pool = [
+                    x for x in random_library + songs
+                    if x not in selected
+                ]
+
+                if extra_pool:
+
+                    selected += random.sample(
+                        extra_pool,
+                        min(missing, len(extra_pool))
+                    )
+
+            selected = selected[:total]
+
+            random.shuffle(selected)
+
+            write(FILES["generated"], selected)
+
+            append(FILES["used"], selected)
+
+            self.msg(f"Generadas {len(selected)} canciones")
+
+            new_name = self.choose_name()
+
+            js = "window.location.href;"
+
+            def callback(current_url):
+
+                self.msg(f"Playlist abierta: {current_url}")
+
+                m = re.search(
+                    r"/playlist/([A-Za-z0-9]+)",
+                    current_url
+                )
+
+                if not m:
+
+                    self.msg("Primero abre una playlist.")
+                    return
+
+                playlist_id = m.group(1)
+
+                try:
+
+                    client2 = sp()
+
+                    client2.playlist_change_details(
+                        playlist_id,
+                        name=new_name
+                    )
+
+                    self.msg(f"Nombre cambiado: {new_name}")
+
+                    track_uris = []
+
+                    for link in selected:
+
+                        m2 = re.search(
+                            r"track/([A-Za-z0-9]+)",
+                            link
+                        )
+
+                        if m2:
+
+                            track_uris.append(
+                                f"spotify:track:{m2.group(1)}"
+                            )
+
+                    if track_uris:
+
+                        client2.playlist_add_items(
+                            playlist_id,
+                            track_uris
+                        )
+
+                        self.msg(f"Canciones agregadas API: {len(track_uris)}")
+
+                        playlist_url = f"https://open.spotify.com/playlist/{playlist_id}"
+
+                        append(
+                            FILES["created_playlists"],
+                            [playlist_url]
+                        )
+
+                        self.consume_license_use()
+
+                        self.web.reload()
+
+                except Exception as e:
+
+                    self.msg(str(e))
+
+            self.web.page().runJavaScript(
+                js,
+                callback
+            )
+
+        except Exception as e:
+
+            self.msg(str(e))
+
+
+app = QApplication(sys.argv)
+
+app.setStyle("Fusion")
+
+window = App()
+
+window.show()
+
+sys.exit(app.exec())

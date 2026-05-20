@@ -3,13 +3,28 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build-windows:
-    runs-on: windows-latest
+    runs-on: windows-2022
 
     steps:
       - name: Descargar proyecto
         uses: actions/checkout@v4
+
+      - name: Extraer ZIP si existe
+        shell: pwsh
+        run: |
+          if (Test-Path "spotify_playlist_clean.zip") {
+            Expand-Archive -Path "spotify_playlist_clean.zip" -DestinationPath "." -Force
+          }
+
+      - name: Ver archivos
+        shell: pwsh
+        run: |
+          dir
 
       - name: Instalar Python
         uses: actions/setup-python@v5
@@ -18,13 +33,8 @@ jobs:
 
       - name: Instalar dependencias
         run: |
-          pip install pyinstaller
-          pip install PyQt6
-          pip install PyQt6-WebEngine
-          pip install spotipy
-          pip install python-dotenv
-          pip install supabase
-          pip install requests
+          python -m pip install --upgrade pip
+          pip install pyinstaller PyQt6 PyQt6-WebEngine spotipy python-dotenv supabase requests
 
       - name: Compilar EXE
         run: |

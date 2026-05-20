@@ -77,10 +77,14 @@ def append(path, lines):
 
 
 def supabase_client():
-    return create_client(
-        os.getenv("SUPABASE_URL"),
-        os.getenv("SUPABASE_KEY")
-    )
+
+    SUPABASE_URL_FIXED = "https://lahuiofwfypzplmekwou.supabase.co"
+    SUPABASE_KEY_FIXED = "sb_publishable_3Anima4TCVgOhSqFCjjO_w_IPRJQYY6"
+
+    url = os.getenv("SUPABASE_URL") or SUPABASE_URL_FIXED
+    key = os.getenv("SUPABASE_KEY") or SUPABASE_KEY_FIXED
+
+    return create_client(url, key)
 
 def device_id():
     path = DATA_DIR / "device_id.txt"

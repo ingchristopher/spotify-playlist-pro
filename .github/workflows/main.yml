@@ -1,0 +1,37 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Descargar proyecto
+        uses: actions/checkout@v4
+
+      - name: Instalar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Instalar dependencias
+        run: |
+          pip install pyinstaller
+          pip install PyQt6
+          pip install PyQt6-WebEngine
+          pip install spotipy
+          pip install python-dotenv
+          pip install supabase
+          pip install requests
+
+      - name: Compilar EXE
+        run: |
+          pyinstaller --windowed --noconfirm --clean --onedir --name SpotifyPlaylistPro app.py
+
+      - name: Subir EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: SpotifyPlaylistPro_Windows
+          path: dist/SpotifyPlaylistPro

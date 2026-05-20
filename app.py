@@ -23,10 +23,14 @@ from PyQt6.QtWebEngineCore import *
 
 BASE_ENV = Path(__file__).parent.resolve()
 
+import sys
+
 possible_envs = [
     BASE_ENV / ".env",
     Path.cwd() / ".env",
-    Path.home() / "Downloads" / "spotify_playlist_app" / ".env",
+    Path(getattr(sys, "_MEIPASS", BASE_ENV)) / ".env",
+    Path(__file__).parent / ".env",
+    Path.home() / "Documents" / "SpotifyPlaylistPro" / ".env",
 ]
 
 for env_file in possible_envs:

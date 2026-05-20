@@ -12,7 +12,7 @@ from dotenv import load_dotenv
 from supabase import create_client
 
 import spotipy
-from spotipy.oauth2 import SpotifyOAuth
+from spotipy.oauth2 import SpotifyPKCE
 
 from PyQt6.QtWidgets import *
 from PyQt6.QtCore import *
@@ -90,13 +90,21 @@ def device_id():
     path.write_text(new_id)
     return new_id
 
+
+def get_app_config():
+    db = supabase_client()
+    result = db.table("app_config").select("*").eq("id", 1).execute()
+    if not result.data:
+        raise Exception("No existe app_config en Supabase")
+    return result.data[0]
+
 def sp():
-    return spotipy.Spotify(auth_manager=SpotifyOAuth(
-        client_id=os.getenv("SPOTIFY_CLIENT_ID"),
-        client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"),
-        redirect_uri="http://127.0.0.1:8888/callback",
+    cfg = get_app_config()
+    return spotipy.Spotify(auth_manager=SpotifyPKCE(
+        client_id=cfg["spotify_client_id"],
+        redirect_uri=cfg.get("spotify_redirect_uri", "http://127.0.0.1:8888/callback"),
         scope=SCOPES,
-        cache_path=str(BASE / ".spotify_cache"),
+        cache_path=str(DATA_DIR / ".spotify_cache"),
         open_browser=True
     ))
 
@@ -340,56 +348,46 @@ class App(QWidget):
         else:
             subprocess.run(["xdg-open", str(DATA_DIR)])
 
+
     def choose_name(self):
 
-        raw = FILES["ideas"].read_text(encoding="utf-8")
+        try:
+            db = supabase_client()
+            result = db.table("playlist_names").select("name").eq("active", True).execute()
+            names = [x["name"] for x in result.data if x.get("name")]
 
-        ideas = []
+            if not names:
+                return "Playlist Automática"
 
-        # dividir por:
-        # coma
-        # salto linea
-        # punto y coma
+            used = set(read(FILES["used_names"]))
+            available = [x for x in names if x not in used]
 
-        for part in re.split(r"[,;\n]+", raw):
+            if not available:
+                write(FILES["used_names"], [])
+                available = names
 
-            clean = part.strip()
+            name = random.choice(available)[:80]
+            append(FILES["used_names"], [name])
+            return name
 
-            if clean:
-                ideas.append(clean)
-
-        if not ideas:
+        except Exception as e:
+            self.msg(str(e))
             return "Playlist Automática"
 
-        used = set(read(FILES["used_names"]))
-
-        available = [
-            x for x in ideas
-            if x not in used
-        ]
-
-        if not available:
-
-            write(FILES["used_names"], [])
-
-            available = ideas
-
-        name = random.choice(available)
-
-        # maximo 80 chars
-        name = name[:80]
-
-        append(FILES["used_names"], [name])
-
-        return name
 
     def update_library(self):
 
         client = sp()
 
-        artists = read(FILES["artists"])
-
         all_tracks = []
+
+        try:
+            db = supabase_client()
+            result = db.table("artist_links").select("artist_url").eq("active", True).execute()
+            artists = [x["artist_url"] for x in result.data if x.get("artist_url")]
+        except Exception as e:
+            self.msg(str(e))
+            artists = []
 
         for link in artists:
 
@@ -400,9 +398,7 @@ class App(QWidget):
             try:
 
                 artist_info = client.artist(aid)
-
                 artist_name = artist_info.get("name", "")
-
                 self.msg(f"Buscando canciones de: {artist_name}")
 
                 for offset in range(0, 100, 10):
@@ -429,9 +425,9 @@ class App(QWidget):
 
                         if artist_name.lower() in artist_names and t.get("id"):
 
-                            url = f"https://open.spotify.com/track/{t['id']}"
-
-                            all_tracks.append(url)
+                            all_tracks.append(
+                                f"https://open.spotify.com/track/{t['id']}"
+                            )
 
                     time.sleep(0.25)
 
@@ -439,20 +435,11 @@ class App(QWidget):
 
                 self.msg(str(e))
 
-        unique = []
-
-        seen = set()
-
-        for x in all_tracks:
-            if x not in seen:
-                seen.add(x)
-                unique.append(x)
+        unique = list(dict.fromkeys(all_tracks))
 
         write(FILES["library"], unique)
 
         self.msg(f"Biblioteca actualizada: {len(unique)} canciones")
-
-
 
 
     def activate_license(self):
@@ -587,39 +574,6 @@ class App(QWidget):
             self.msg("No pude registrar uso licencia:")
             self.msg(str(e))
 
-
-    def license_status(self):
-
-        try:
-
-            lic = self.get_license()
-
-            if not lic:
-                self.msg("No hay licencia activa.")
-                return
-
-            used = int(
-                lic.get("used_playlists", 0)
-            )
-
-            limit = int(
-                lic.get("playlist_limit", 0)
-            )
-
-            remaining = limit - used
-
-            if remaining < 0:
-                remaining = 0
-
-            self.msg(
-                f"Uso disponible: {remaining} playlists"
-            )
-
-        except Exception as e:
-
-            self.msg(str(e))
-
-
     def generate_playlist(self):
 
         try:
@@ -639,7 +593,14 @@ class App(QWidget):
 
             random_library = []
 
-            for q in ["top hits", "viral music", "latin hits", "reggaeton", "pop hits", "dance hits"]:
+            try:
+                db = supabase_client()
+                rq = db.table("random_queries").select("query").eq("active", True).execute()
+                queries = [x["query"] for x in rq.data if x.get("query")]
+            except Exception:
+                queries = ["top hits", "viral music", "latin hits", "reggaeton", "pop hits", "dance hits"]
+
+            for q in queries:
 
                 try:
 

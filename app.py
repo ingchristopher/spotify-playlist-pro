@@ -169,7 +169,7 @@ class App(QWidget):
 
         left.addWidget(title)
 
-        credit = QLabel("Christopher Cedeno\nchristopher.cedeno@gmail.com")
+        credit = QLabel("Ing. Cedeno\nTelegram @ingcedeno")
         credit.setStyleSheet("font-size:13px;")
         left.addWidget(credit)
 
@@ -188,6 +188,7 @@ class App(QWidget):
         buttons = [
             ("🔐 Activar Licencia", self.activate_license),
             ("🎵 Generar Playlist", self.generate_playlist),
+            ("🔁 Solo cambiar nombre", self.rename_only_free),
             ("👤 Mis Artistas", self.open_artists),
             ("➕ Agregar Artista", self.add_artist),
             ("📚 Playlists creadas", self.open_created_playlists),
@@ -263,63 +264,86 @@ class App(QWidget):
 
 
 
-    def add_artist(self):
 
-        text, ok = QInputDialog.getText(
-            self,
-            "Agregar Artista",
-            "Pega link artista Spotify:"
-        )
+    def current_license_code(self):
 
-        if ok and text.strip():
+        try:
+            if FILES["license"].exists():
+                code = FILES["license"].read_text(encoding="utf-8").strip()
+                if code:
+                    return code
+        except Exception:
+            pass
 
-            current = read(FILES["artists"])
-
-            if text.strip() not in current:
-
-                append(
-                    FILES["artists"],
-                    [text.strip()]
-                )
-
-                self.msg("Artista agregado.")
-
-            else:
-
-                self.msg("Ese artista ya existe.")
-
-
+        return None
 
     def add_artist(self):
 
-        text, ok = QInputDialog.getText(
+        code = self.current_license_code()
+
+        if not code:
+            self.msg("Primero activa una licencia para guardar tus artistas.")
+            return
+
+        artist, ok = QInputDialog.getText(
             self,
             "Agregar Artista",
-            "Pega link artista Spotify:"
+            "Pega el link del artista de Spotify:"
         )
 
-        if ok and text.strip():
+        if not ok or not artist.strip():
+            return
 
-            current = read(FILES["artists"])
+        artist = artist.strip()
 
-            if text.strip() not in current:
+        if "open.spotify.com/artist/" not in artist and "spotify:artist:" not in artist:
+            self.msg("Link inválido. Debe ser link de artista Spotify.")
+            return
 
-                append(
-                    FILES["artists"],
-                    [text.strip()]
-                )
+        try:
+            db = supabase_client()
 
-                self.msg("Artista agregado.")
+            db.table("user_artist_links").insert({
+                "license_code": code,
+                "artist_url": artist,
+                "active": True
+            }).execute()
 
+            self.msg("Artista agregado a tu cuenta.")
+
+        except Exception as e:
+
+            if "duplicate" in str(e).lower() or "unique" in str(e).lower():
+                self.msg("Ese artista ya existe en tu cuenta.")
             else:
-
-                self.msg("Ese artista ya existe.")
+                self.msg(str(e))
 
 
     def open_artists(self):
+
+        code = self.current_license_code()
+
+        if not code:
+            self.msg("Primero activa licencia para ver tus artistas.")
+            return
+
+        try:
+            db = supabase_client()
+
+            result = db.table("user_artist_links").select("artist_url").eq("license_code", code).eq("active", True).execute()
+
+            artists = [
+                x["artist_url"]
+                for x in result.data
+                if x.get("artist_url")
+            ]
+
+            write(FILES["artists"], artists)
+
+        except Exception as e:
+            self.msg(str(e))
+
         import os, subprocess, platform
-        FILES["artists"].parent.mkdir(parents=True, exist_ok=True)
-        FILES["artists"].touch(exist_ok=True)
         path = str(FILES["artists"])
 
         if platform.system() == "Windows":
@@ -328,10 +352,6 @@ class App(QWidget):
             subprocess.run(["open", path])
         else:
             subprocess.run(["xdg-open", path])
-
-    def open_ideas(self):
-        os.system(f"open '{FILES['ideas']}'")
-
 
     def open_created_playlists(self):
         os.system(f"open '{FILES['created_playlists']}'")
@@ -379,19 +399,38 @@ class App(QWidget):
             return "Playlist Automática"
 
 
+
     def update_library(self):
 
         client = sp()
 
         all_tracks = []
 
+        code = self.current_license_code()
+
+        if not code:
+            self.msg("Primero activa una licencia.")
+            return
+
         try:
             db = supabase_client()
-            result = db.table("artist_links").select("artist_url").eq("active", True).execute()
-            artists = [x["artist_url"] for x in result.data if x.get("artist_url")]
+
+            result = db.table("user_artist_links").select("artist_url").eq("license_code", code).eq("active", True).execute()
+
+            artists = [
+                x["artist_url"]
+                for x in result.data
+                if x.get("artist_url")
+            ]
+
         except Exception as e:
             self.msg(str(e))
             artists = []
+
+        if not artists:
+            self.msg("No tienes artistas agregados. Presiona ➕ Agregar Artista.")
+            write(FILES["library"], [])
+            return
 
         for link in artists:
 
@@ -402,7 +441,9 @@ class App(QWidget):
             try:
 
                 artist_info = client.artist(aid)
+
                 artist_name = artist_info.get("name", "")
+
                 self.msg(f"Buscando canciones de: {artist_name}")
 
                 for offset in range(0, 100, 10):
@@ -444,6 +485,54 @@ class App(QWidget):
         write(FILES["library"], unique)
 
         self.msg(f"Biblioteca actualizada: {len(unique)} canciones")
+
+
+    def get_open_playlist_id(self, callback):
+
+        js = "window.location.href;"
+
+        def got_url(current_url):
+
+            self.msg(f"Playlist abierta: {current_url}")
+
+            m = re.search(
+                r"/playlist/([A-Za-z0-9]+)",
+                current_url
+            )
+
+            if not m:
+                self.msg("Primero abre una playlist en Spotify.")
+                callback(None)
+                return
+
+            callback(m.group(1))
+
+        self.web.page().runJavaScript(js, got_url)
+
+    def rename_only_free(self):
+
+        new_name = self.choose_name()
+
+        def work(playlist_id):
+
+            if not playlist_id:
+                return
+
+            try:
+                client = sp()
+
+                client.playlist_change_details(
+                    playlist_id,
+                    name=new_name
+                )
+
+                self.msg(f"Nombre cambiado gratis: {new_name}")
+                self.web.reload()
+
+            except Exception as e:
+                self.msg(str(e))
+
+        self.get_open_playlist_id(work)
 
 
     def activate_license(self):

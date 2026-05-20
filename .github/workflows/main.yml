@@ -3,9 +3,6 @@ name: Build Windows EXE
 on:
   workflow_dispatch:
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   build-windows:
     runs-on: windows-2022
@@ -14,22 +11,20 @@ jobs:
       - name: Descargar proyecto
         uses: actions/checkout@v4
 
-      - name: Extraer ZIP si existe
-        shell: pwsh
-        run: |
-          if (Test-Path "spotify_playlist_clean.zip") {
-            Expand-Archive -Path "spotify_playlist_clean.zip" -DestinationPath "." -Force
-          }
-
-      - name: Ver archivos
-        shell: pwsh
-        run: |
-          dir
-
       - name: Instalar Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
+
+      - name: Crear .env
+        shell: pwsh
+        run: |
+          @"
+          SPOTIFY_CLIENT_ID=${{ secrets.SPOTIFY_CLIENT_ID }}
+          SPOTIFY_CLIENT_SECRET=${{ secrets.SPOTIFY_CLIENT_SECRET }}
+          SUPABASE_URL=${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY=${{ secrets.SUPABASE_KEY }}
+          "@ | Out-File -Encoding utf8 .env
 
       - name: Instalar dependencias
         run: |
@@ -38,7 +33,7 @@ jobs:
 
       - name: Compilar EXE
         run: |
-          pyinstaller --windowed --noconfirm --clean --onedir --name SpotifyPlaylistPro app.py
+          pyinstaller --windowed --noconfirm --clean --onedir --name SpotifyPlaylistPro --add-data ".env;." app.py
 
       - name: Subir EXE
         uses: actions/upload-artifact@v4

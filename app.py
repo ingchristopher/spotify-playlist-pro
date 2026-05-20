@@ -303,8 +303,19 @@ class App(QWidget):
 
                 self.msg("Ese artista ya existe.")
 
+
     def open_artists(self):
-        os.system(f"open '{FILES['artists']}'")
+        import os, subprocess, platform
+        FILES["artists"].parent.mkdir(parents=True, exist_ok=True)
+        FILES["artists"].touch(exist_ok=True)
+        path = str(FILES["artists"])
+
+        if platform.system() == "Windows":
+            os.startfile(path)
+        elif platform.system() == "Darwin":
+            subprocess.run(["open", path])
+        else:
+            subprocess.run(["xdg-open", path])
 
     def open_ideas(self):
         os.system(f"open '{FILES['ideas']}'")
@@ -314,9 +325,20 @@ class App(QWidget):
         os.system(f"open '{FILES['created_playlists']}'")
         self.msg("Abriendo playlists creadas.")
 
-    def config(self):
-        self.msg("CONFIG OK")
 
+    def config(self):
+        import os, subprocess, platform
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+
+        self.msg(f"Carpeta de datos:")
+        self.msg(str(DATA_DIR))
+
+        if platform.system() == "Windows":
+            os.startfile(str(DATA_DIR))
+        elif platform.system() == "Darwin":
+            subprocess.run(["open", str(DATA_DIR)])
+        else:
+            subprocess.run(["xdg-open", str(DATA_DIR)])
 
     def choose_name(self):
 
